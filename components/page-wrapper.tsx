@@ -2,6 +2,7 @@ import { Fragment } from "react";
 import Link from "next/link";
 
 import { AppSidebar } from "@/components/app-sidebar";
+import { ModeToggle } from "@/components/mode-toggle";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -57,6 +58,9 @@ export function PageWrapper({
               </Breadcrumb>
             </>
           ) : null}
+          <div className="ml-auto">
+            <ModeToggle />
+          </div>
         </header>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-4">
           {children}
