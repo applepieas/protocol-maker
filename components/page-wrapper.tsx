@@ -21,11 +21,13 @@ import {
 interface PageWrapperProps {
   children: React.ReactNode;
   breadcrumbs?: { label: string; href: string }[];
+  scrollable?: boolean;
 }
 
 export function PageWrapper({
   children,
   breadcrumbs = [],
+  scrollable = false,
 }: Readonly<PageWrapperProps>) {
   const lastIndex = breadcrumbs.length - 1;
 
@@ -62,7 +64,10 @@ export function PageWrapper({
             <ModeToggle />
           </div>
         </header>
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-4">
+        <div
+          className={`flex min-h-0 min-w-0 flex-1 flex-col p-4 ${scrollable ? "overflow-y-auto overflow-x-hidden" : "overflow-hidden"
+            }`}
+        >
           {children}
         </div>
       </SidebarInset>

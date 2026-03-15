@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Field, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "@/components/ui/field";
+import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
 interface ProtocolFormState {
@@ -16,7 +17,7 @@ interface ProtocolFormState {
   zadani: string;
   postup: string;
   pomucky: string;
-  files: string[];
+  files: File[];
 }
 
 const initialFormState: ProtocolFormState = {
@@ -30,26 +31,180 @@ const initialFormState: ProtocolFormState = {
 export default function NewProtocolPage() {
   const [formState, setFormState] = useState<ProtocolFormState>(initialFormState);
   const [isDragActive, setIsDragActive] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [streamedOutput, setStreamedOutput] = useState("");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const fileNames = formState.files.map((file) => file.name);
 
   const onFileSelection = (files: FileList | null) => {
     if (!files) {
       return;
     }
 
-    const names = Array.from(files).map((file) => file.name);
+    const selectedFiles = Array.from(files);
     setFormState((previous) => ({
       ...previous,
-      files: names,
+      files: selectedFiles,
     }));
   };
 
-  const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    console.log("New protocol form state:", formState);
+
+    setErrorMessage(null);
+    setStreamedOutput("");
+    setIsSubmitting(true);
+
+    const supabase = createClient();
+
+    try {
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError || !user) {
+        throw new Error("Unauthorized");
+      }
+
+      if (!formState.title || !formState.zadani || !formState.postup || !formState.pomucky) {
+        throw new Error("Vyplňte prosím všechna povinná textová pole.");
+      }
+
+      const { data: createdProtocol, error: createProtocolError } = await supabase
+        .from("protocols")
+        .insert({
+          user_id: user.id,
+          title: formState.title,
+          zadani: formState.zadani,
+          postup: formState.postup,
+          pomucky: formState.pomucky,
+          status: "draft",
+        })
+        .select("id")
+        .single();
+
+      if (createProtocolError || !createdProtocol?.id) {
+        throw new Error(createProtocolError?.message || "Nepodařilo se vytvořit protokol.");
+      }
+
+      const protocolId = createdProtocol.id;
+
+      const filePaths: string[] = [];
+
+      for (const file of formState.files) {
+        const path = `${user.id}/${protocolId}/${file.name}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("protocol-uploads")
+          .upload(path, file);
+
+        if (uploadError) {
+          throw new Error(uploadError.message);
+        }
+
+        filePaths.push(path);
+      }
+
+      if (filePaths.length > 0) {
+        const { error: fileRowsError } = await supabase.from("protocol_files").insert(
+          filePaths.map((path) => ({
+            protocol_id: protocolId,
+            storage_path: path,
+            file_type: path.split(".").pop() ?? null,
+          }))
+        );
+
+        if (fileRowsError) {
+          throw new Error(fileRowsError.message);
+        }
+      }
+
+      const response = await fetch("/api/generate-protocol", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          protocolId,
+          title: formState.title,
+          zadani: formState.zadani,
+          postup: formState.postup,
+          pomucky: formState.pomucky,
+          filePaths,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => null);
+        const message =
+          errorPayload && typeof errorPayload.error === "string"
+            ? errorPayload.error
+            : "Generování protokolu selhalo.";
+        throw new Error(message);
+      }
+
+      if (!response.body) {
+        throw new Error("Server nevrátil stream odpovědi.");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        if (!value) {
+          continue;
+        }
+
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split("\n");
+        sseBuffer = lines.pop() ?? "";
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+
+          if (!line.startsWith("data:")) {
+            continue;
+          }
+
+          const payload = line.replace(/^data:\s*/, "");
+          if (!payload || payload === "[DONE]") {
+            continue;
+          }
+
+          try {
+            const parsed = JSON.parse(payload);
+            const token = parsed?.choices?.[0]?.delta?.content;
+            if (typeof token === "string") {
+              setStreamedOutput((previous) => previous + token);
+            }
+          } catch {
+            // Ignore malformed SSE lines from partial chunks.
+          }
+        }
+      }
+
+      setFormState(initialFormState);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Generování protokolu selhalo neznámou chybou."
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <PageWrapper
+      scrollable
       breadcrumbs={[
         { label: "Dashboard", href: "/dashboard" },
         { label: "Nový protokol", href: "/new-protocol" },
@@ -108,6 +263,13 @@ export default function NewProtocolPage() {
                   onChange={(event) => onFileSelection(event.target.files)}
                 />
               </label>
+              {fileNames.length > 0 ? (
+                <ul className="mt-2 list-inside list-disc text-sm text-muted-foreground">
+                  {fileNames.map((name) => (
+                    <li key={name}>{name}</li>
+                  ))}
+                </ul>
+              ) : null}
             </Field>
           </FieldGroup>
 
@@ -173,8 +335,27 @@ export default function NewProtocolPage() {
             </AlertDescription>
           </Alert>
 
-          <Button type="submit" className="w-full py-5">
-            Generovat protokol
+          {errorMessage ? (
+            <Alert variant="destructive">
+              <AlertTitle>Chyba</AlertTitle>
+              <AlertDescription>{errorMessage}</AlertDescription>
+            </Alert>
+          ) : null}
+
+          {streamedOutput ? (
+            <Field>
+              <FieldLabel>Živý výstup generování</FieldLabel>
+              <Textarea
+                readOnly
+                rows={10}
+                value={streamedOutput}
+                className="font-mono text-xs"
+              />
+            </Field>
+          ) : null}
+
+          <Button type="submit" className="w-full py-5" disabled={isSubmitting}>
+            {isSubmitting ? "Generuji protokol..." : "Generovat protokol"}
           </Button>
         </form>
       </div>
