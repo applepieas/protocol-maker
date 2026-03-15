@@ -89,6 +89,11 @@ export default function EditorProtocolPage() {
     [searchParams]
   )
 
+  const hasReadyData = useMemo(
+    () => Boolean(tiptapDoc) && Boolean(sheetData && sheetData.length > 0),
+    [sheetData, tiptapDoc]
+  )
+
   const startGeneration = useCallback(async (payload: GeneratePayload) => {
     setErrorMessage(null)
     setState('generating')
@@ -144,8 +149,15 @@ export default function EditorProtocolPage() {
         }
 
         if (event.type === 'done') {
-          setTiptapDoc(event.tiptapDoc)
-          setSheetData(event.sheetData as EditorSheetData)
+          const nextDoc = event.tiptapDoc
+          const nextSheetData = event.sheetData as EditorSheetData
+
+          if (!nextDoc || !Array.isArray(nextSheetData) || nextSheetData.length === 0) {
+            throw new Error('Generování skončilo bez kompletních dat pro editor.')
+          }
+
+          setTiptapDoc(nextDoc)
+          setSheetData(nextSheetData)
           setState('done')
           completed = true
         }
@@ -199,10 +211,16 @@ export default function EditorProtocolPage() {
         const protocol = data as ProtocolRow
 
         if (protocol.status === 'done') {
-          setTiptapDoc(protocol.tiptap_doc ?? undefined)
-          setSheetData((protocol.sheet_data as EditorSheetData | null) ?? undefined)
-          setState('done')
-          return
+          const hydratedDoc = protocol.tiptap_doc ?? undefined
+          const hydratedSheetData =
+            (protocol.sheet_data as EditorSheetData | null) ?? undefined
+
+          if (hydratedDoc && hydratedSheetData && hydratedSheetData.length > 0) {
+            setTiptapDoc(hydratedDoc)
+            setSheetData(hydratedSheetData)
+            setState('done')
+            return
+          }
         }
 
         const fallbackFiles =
@@ -275,7 +293,7 @@ export default function EditorProtocolPage() {
         { label: 'Editor', href: `/editor/${protocolId}` },
       ]}
     >
-      {state === 'done' ? (
+      {state === 'done' && hasReadyData ? (
         <div className="flex min-h-0 min-w-0 flex-1">
           <TextEditor initialContent={tiptapDoc} initialSheetData={sheetData} />
         </div>
