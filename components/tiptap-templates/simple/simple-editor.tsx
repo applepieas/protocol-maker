@@ -74,6 +74,10 @@ import "katex/dist/katex.min.css"
 
 import content from "@/components/tiptap-templates/simple/data/content.json"
 
+type SimpleEditorProps = {
+  initialContent?: object
+}
+
 const MainToolbarContent = ({
   onHighlighterClick,
   onLinkClick,
@@ -202,7 +206,7 @@ const MobileToolbarContent = ({
   </>
 )
 
-export function SimpleEditor() {
+export function SimpleEditor({ initialContent }: SimpleEditorProps) {
   const isMobile = useIsBreakpoint()
   const { height } = useWindowSize()
   const [mobileView, setMobileView] = useState<"main" | "highlighter" | "link">(
@@ -252,7 +256,7 @@ export function SimpleEditor() {
         onError: (error) => console.error("Upload failed:", error),
       }),
     ],
-    content,
+    content: initialContent ?? content,
   })
 
   const rect = useCursorVisibility({

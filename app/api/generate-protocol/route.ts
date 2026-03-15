@@ -15,6 +15,11 @@ import {
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
+type SSEEvent =
+  | { type: 'progress'; step: 1 | 2 | 3; message: string }
+  | { type: 'done'; tiptapDoc: object; sheetData: object[] }
+  | { type: 'error'; message: string }
+
 type GenerateProtocolRequestBody = {
   protocolId: string
   title: string
@@ -35,6 +40,11 @@ type OpenRouterJsonResponse = {
     }
   }>
 }
+
+const encoder = new TextEncoder()
+
+const encodeEvent = (event: SSEEvent) =>
+  encoder.encode(`data: ${JSON.stringify(event)}\n\n`)
 
 function isValidBody(body: unknown): body is GenerateProtocolRequestBody {
   if (!body || typeof body !== 'object') {
@@ -169,195 +179,165 @@ export async function POST(request: NextRequest) {
 
     await updateProtocolStatus(protocolId, 'generating')
 
-    const { base64Images, csvTexts, notes } = await prepareStorageFiles(filePaths)
-    const commonContent = buildCommonContent(base64Images, csvTexts, notes)
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
+    const writer = writable.getWriter()
 
-    const call1Response = await callOpenRouter({
-      model: 'google/gemini-2.0-flash-001',
-      messages: [
-        { role: 'system', content: CALL_1_SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: [
-            ...commonContent,
+    void (async () => {
+      try {
+        await writer.write(
+          encodeEvent({
+            type: 'progress',
+            step: 1,
+            message: 'Analyzuji strukturu dat...',
+          })
+        )
+
+        const { base64Images, csvTexts, notes } = await prepareStorageFiles(filePaths)
+        const commonContent = buildCommonContent(base64Images, csvTexts, notes)
+
+        const call1Response = await callOpenRouter({
+          model: 'google/gemini-2.0-flash-001',
+          messages: [
+            { role: 'system', content: CALL_1_SYSTEM_PROMPT },
             {
-              type: 'text',
-              text: 'Detect all separate tables and their column ranges.',
+              role: 'user',
+              content: [
+                ...commonContent,
+                {
+                  type: 'text',
+                  text: 'Detect all separate tables and their column ranges.',
+                },
+              ],
             },
           ],
-        },
-      ],
-      response_format: { type: 'json_object' },
-    })
+          response_format: { type: 'json_object' },
+        })
 
-    const call1Json = await call1Response.json()
-    const tableLayout = parseChoiceJsonPayload(call1Json)
+        const call1Json = await call1Response.json()
+        const tableLayout = parseChoiceJsonPayload(call1Json)
 
-    const runCall2 = async (validationError?: string): Promise<Call2Output> => {
-      const call2Response = await callOpenRouter({
-        model: 'google/gemini-2.0-flash-001',
-        messages: [
-          { role: 'system', content: CALL_2_SYSTEM_PROMPT },
-          {
-            role: 'user',
-            content: [
-              ...commonContent,
+        await writer.write(
+          encodeEvent({
+            type: 'progress',
+            step: 2,
+            message: 'Extrahuji a normalizuji tabulky...',
+          })
+        )
+
+        const runCall2 = async (validationError?: string): Promise<Call2Output> => {
+          const call2Response = await callOpenRouter({
+            model: 'google/gemini-2.0-flash-001',
+            messages: [
+              { role: 'system', content: CALL_2_SYSTEM_PROMPT },
               {
-                type: 'text',
-                text: `Layout JSON:\n${JSON.stringify(tableLayout)}`,
-              },
-              ...(validationError
-                ? [
+                role: 'user',
+                content: [
+                  ...commonContent,
                   {
                     type: 'text',
-                    text: `Validation failed: ${validationError}`,
+                    text: `Layout JSON:\n${JSON.stringify(tableLayout)}`,
                   },
-                ]
-                : []),
+                  ...(validationError
+                    ? [
+                      {
+                        type: 'text',
+                        text: `Validation failed: ${validationError}`,
+                      },
+                    ]
+                    : []),
+                ],
+              },
             ],
-          },
-        ],
-        response_format: { type: 'json_object' },
-      })
+            response_format: { type: 'json_object' },
+          })
 
-      const call2Json = await call2Response.json()
-      const parsed = parseChoiceJsonPayload(call2Json)
-      return parsed as unknown as Call2Output
-    }
-
-    let call2Output = await runCall2()
-
-    try {
-      validateCall2Output(call2Output)
-    } catch (validationError) {
-      const retryValidationMessage =
-        validationError instanceof Error
-          ? validationError.message
-          : 'Unknown validation error'
-
-      call2Output = await runCall2(retryValidationMessage)
-      validateCall2Output(call2Output)
-    }
-
-    const sheetData = tableDataToSheetData(call2Output.tables)
-
-    const call3AResponse = await callOpenRouter({
-      model: 'google/gemini-2.0-flash-001',
-      stream: true,
-      messages: [
-        { role: 'system', content: CALL_3A_SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `title: ${title}\nzadani: ${zadani}\npostup: ${postup}\npomucky: ${pomucky}\nvalidated_table_data: ${JSON.stringify(
-                call2Output
-              )}`,
-            },
-          ],
-        },
-      ],
-    })
-
-    if (!call3AResponse.body) {
-      throw new Error('Streaming response body is missing')
-    }
-
-    const stream = new ReadableStream({
-      async start(controller) {
-        let generatedJsonText = ''
-        const reader = call3AResponse.body?.getReader()
-
-        if (!reader) {
-          await updateProtocolStatus(protocolId, 'error')
-          controller.close()
-          return
+          const call2Json = await call2Response.json()
+          const parsed = parseChoiceJsonPayload(call2Json)
+          return parsed as unknown as Call2Output
         }
 
-        const decoder = new TextDecoder()
-        let sseBuffer = ''
+        let call2Output = await runCall2()
 
         try {
-          while (true) {
-            const { done, value } = await reader.read()
+          validateCall2Output(call2Output)
+        } catch (validationError) {
+          const retryValidationMessage =
+            validationError instanceof Error
+              ? validationError.message
+              : 'Unknown validation error'
 
-            if (done) {
-              break
-            }
-
-            if (!value) {
-              continue
-            }
-
-            controller.enqueue(value)
-
-            sseBuffer += decoder.decode(value, { stream: true })
-            const lines = sseBuffer.split('\n')
-            sseBuffer = lines.pop() ?? ''
-
-            for (const rawLine of lines) {
-              const line = rawLine.trim()
-
-              if (!line.startsWith('data:')) {
-                continue
-              }
-
-              const payload = line.replace(/^data:\s*/, '')
-
-              if (payload === '[DONE]') {
-                continue
-              }
-
-              try {
-                const parsed = JSON.parse(payload)
-                const delta = parsed?.choices?.[0]?.delta?.content
-                if (typeof delta === 'string') {
-                  generatedJsonText += delta
-                }
-              } catch {
-                // Ignore malformed partial SSE payloads.
-              }
-            }
-          }
-
-          const finalFlush = decoder.decode()
-          if (finalFlush) {
-            sseBuffer += finalFlush
-          }
-
-          if (sseBuffer.trim().startsWith('data:')) {
-            const payload = sseBuffer.trim().replace(/^data:\s*/, '')
-            if (payload && payload !== '[DONE]') {
-              try {
-                const parsed = JSON.parse(payload)
-                const delta = parsed?.choices?.[0]?.delta?.content
-                if (typeof delta === 'string') {
-                  generatedJsonText += delta
-                }
-              } catch {
-                // Ignore trailing non-JSON fragments.
-              }
-            }
-          }
-
-          const parsedTipTapDoc = JSON.parse(generatedJsonText) as Record<
-            string,
-            unknown
-          >
-
-          await saveProtocolOutput(protocolId, parsedTipTapDoc, sheetData)
-          await updateProtocolStatus(protocolId, 'done')
-          controller.close()
-        } catch {
-          await updateProtocolStatus(protocolId, 'error')
-          controller.close()
+          call2Output = await runCall2(retryValidationMessage)
+          validateCall2Output(call2Output)
         }
-      },
-    })
 
-    return new Response(stream, {
-      headers: { 'Content-Type': 'text/event-stream' },
+        await writer.write(
+          encodeEvent({
+            type: 'progress',
+            step: 3,
+            message: 'Píšu protokol...',
+          })
+        )
+
+        const call3AResponse = await callOpenRouter({
+          model: 'google/gemini-2.0-flash-001',
+          messages: [
+            { role: 'system', content: CALL_3A_SYSTEM_PROMPT },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: `title: ${title}\nzadani: ${zadani}\npostup: ${postup}\npomucky: ${pomucky}\nvalidated_table_data: ${JSON.stringify(
+                    call2Output
+                  )}`,
+                },
+              ],
+            },
+          ],
+          response_format: { type: 'json_object' },
+        })
+
+        const call3AJson = await call3AResponse.json()
+        const tiptapDoc = parseChoiceJsonPayload(call3AJson)
+        const sheetData = tableDataToSheetData(call2Output.tables)
+
+        await saveProtocolOutput(protocolId, tiptapDoc, sheetData)
+        await updateProtocolStatus(protocolId, 'done')
+
+        await writer.write(
+          encodeEvent({
+            type: 'done',
+            tiptapDoc,
+            sheetData,
+          })
+        )
+      } catch (error) {
+        if (protocolIdForErrorStatus) {
+          try {
+            await updateProtocolStatus(protocolIdForErrorStatus, 'error')
+          } catch {
+            // Ignore secondary status update errors.
+          }
+        }
+
+        await writer.write(
+          encodeEvent({
+            type: 'error',
+            message:
+              error instanceof Error ? error.message : 'Generování protokolu selhalo.',
+          })
+        )
+      } finally {
+        await writer.close()
+      }
+    })()
+
+    return new Response(readable, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
     })
   } catch (error) {
     if (protocolIdForErrorStatus) {

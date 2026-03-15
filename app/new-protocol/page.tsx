@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { TriangleAlertIcon, UploadIcon } from "lucide-react";
 
@@ -29,10 +30,10 @@ const initialFormState: ProtocolFormState = {
 };
 
 export default function NewProtocolPage() {
+  const router = useRouter();
   const [formState, setFormState] = useState<ProtocolFormState>(initialFormState);
   const [isDragActive, setIsDragActive] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [streamedOutput, setStreamedOutput] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const fileNames = formState.files.map((file) => file.name);
@@ -53,7 +54,6 @@ export default function NewProtocolPage() {
     event.preventDefault();
 
     setErrorMessage(null);
-    setStreamedOutput("");
     setIsSubmitting(true);
 
     const supabase = createClient();
@@ -72,24 +72,28 @@ export default function NewProtocolPage() {
         throw new Error("Vyplňte prosím všechna povinná textová pole.");
       }
 
-      const { data: createdProtocol, error: createProtocolError } = await supabase
-        .from("protocols")
-        .insert({
-          user_id: user.id,
-          title: formState.title,
-          zadani: formState.zadani,
-          postup: formState.postup,
-          pomucky: formState.pomucky,
-          status: "draft",
-        })
-        .select("id")
-        .single();
+      const createProtocol = async () => {
+        const { data: createdProtocol, error: createProtocolError } = await supabase
+          .from("protocols")
+          .insert({
+            user_id: user.id,
+            title: formState.title,
+            zadani: formState.zadani,
+            postup: formState.postup,
+            pomucky: formState.pomucky,
+            status: "draft",
+          })
+          .select("id")
+          .single();
 
-      if (createProtocolError || !createdProtocol?.id) {
-        throw new Error(createProtocolError?.message || "Nepodařilo se vytvořit protokol.");
-      }
+        if (createProtocolError || !createdProtocol?.id) {
+          throw new Error(createProtocolError?.message || "Nepodařilo se vytvořit protokol.");
+        }
 
-      const protocolId = createdProtocol.id;
+        return createdProtocol.id;
+      };
+
+      const protocolId = await createProtocol();
 
       const filePaths: string[] = [];
 
@@ -105,94 +109,28 @@ export default function NewProtocolPage() {
         }
 
         filePaths.push(path);
-      }
 
-      if (filePaths.length > 0) {
-        const { error: fileRowsError } = await supabase.from("protocol_files").insert(
-          filePaths.map((path) => ({
-            protocol_id: protocolId,
-            storage_path: path,
-            file_type: path.split(".").pop() ?? null,
-          }))
-        );
+        const { error: fileRowError } = await supabase.from("protocol_files").insert({
+          protocol_id: protocolId,
+          storage_path: path,
+          file_type: file.type || null,
+        });
 
-        if (fileRowsError) {
-          throw new Error(fileRowsError.message);
+        if (fileRowError) {
+          throw new Error(fileRowError.message);
         }
       }
 
-      const response = await fetch("/api/generate-protocol", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          protocolId,
-          title: formState.title,
-          zadani: formState.zadani,
-          postup: formState.postup,
-          pomucky: formState.pomucky,
-          filePaths,
-        }),
+      const params = new URLSearchParams({
+        title: formState.title,
+        zadani: formState.zadani,
+        postup: formState.postup,
+        pomucky: formState.pomucky,
+        filePaths: JSON.stringify(filePaths),
       });
 
-      if (!response.ok) {
-        const errorPayload = await response.json().catch(() => null);
-        const message =
-          errorPayload && typeof errorPayload.error === "string"
-            ? errorPayload.error
-            : "Generování protokolu selhalo.";
-        throw new Error(message);
-      }
-
-      if (!response.body) {
-        throw new Error("Server nevrátil stream odpovědi.");
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let sseBuffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          break;
-        }
-
-        if (!value) {
-          continue;
-        }
-
-        sseBuffer += decoder.decode(value, { stream: true });
-        const lines = sseBuffer.split("\n");
-        sseBuffer = lines.pop() ?? "";
-
-        for (const rawLine of lines) {
-          const line = rawLine.trim();
-
-          if (!line.startsWith("data:")) {
-            continue;
-          }
-
-          const payload = line.replace(/^data:\s*/, "");
-          if (!payload || payload === "[DONE]") {
-            continue;
-          }
-
-          try {
-            const parsed = JSON.parse(payload);
-            const token = parsed?.choices?.[0]?.delta?.content;
-            if (typeof token === "string") {
-              setStreamedOutput((previous) => previous + token);
-            }
-          } catch {
-            // Ignore malformed SSE lines from partial chunks.
-          }
-        }
-      }
-
       setFormState(initialFormState);
+      router.push(`/editor/${protocolId}?${params.toString()}`);
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : "Generování protokolu selhalo neznámou chybou."
@@ -342,20 +280,8 @@ export default function NewProtocolPage() {
             </Alert>
           ) : null}
 
-          {streamedOutput ? (
-            <Field>
-              <FieldLabel>Živý výstup generování</FieldLabel>
-              <Textarea
-                readOnly
-                rows={10}
-                value={streamedOutput}
-                className="font-mono text-xs"
-              />
-            </Field>
-          ) : null}
-
           <Button type="submit" className="w-full py-5" disabled={isSubmitting}>
-            {isSubmitting ? "Generuji protokol..." : "Generovat protokol"}
+            {isSubmitting ? "Připravuji..." : "Generovat protokol"}
           </Button>
         </form>
       </div>

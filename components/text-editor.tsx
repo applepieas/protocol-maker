@@ -11,6 +11,11 @@ const MAX_LEFT_PANE_PERCENT = 80
 
 const INITIAL_SHEETS = [{ name: "Sheet 1" }]
 
+type TextEditorProps = {
+  initialContent?: object
+  initialSheetData?: Array<{ name: string;[key: string]: unknown }>
+}
+
 const clampPaneSize = (value: number) => {
   if (value < MIN_LEFT_PANE_PERCENT) return MIN_LEFT_PANE_PERCENT
   if (value > MAX_LEFT_PANE_PERCENT) return MAX_LEFT_PANE_PERCENT
@@ -34,12 +39,18 @@ const czechToDecimalDot = (text: string): string => {
   return text.replace(/(\d),(\d)/g, "$1.$2")
 }
 
-export default function TextEditor() {
+export default function TextEditor({
+  initialContent,
+  initialSheetData,
+}: TextEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const dataPaneRef = useRef<HTMLDivElement>(null)
   const workbookRef = useRef<WorkbookInstance | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [leftPanePercent, setLeftPanePercent] = useState(50)
+  const workbookData = initialSheetData && initialSheetData.length > 0
+    ? initialSheetData
+    : INITIAL_SHEETS
 
   // ── Paste interception ───────────────────────────────────────────────────
   // fortune-sheet reads pasted text from the clipboard directly, so we
@@ -227,7 +238,7 @@ export default function TextEditor() {
         className="h-full min-h-0 min-w-0 overflow-hidden"
         style={{ width: `${leftPanePercent}%` }}
       >
-        <SimpleEditor />
+        <SimpleEditor initialContent={initialContent} />
       </section>
 
       {/* ── Divider ── */}
@@ -270,7 +281,7 @@ export default function TextEditor() {
         <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
           <Workbook
             ref={workbookRef}
-            data={INITIAL_SHEETS}
+            data={workbookData}
             lang="en"
           />
         </div>
