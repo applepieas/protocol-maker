@@ -14,7 +14,11 @@ const menuItems = [
     { name: 'About', href: '#link' },
 ]
 
-export const HeroHeader = () => {
+type HeroHeaderProps = {
+    authHref: '/login' | '/dashboard'
+}
+
+export const HeroHeader = ({ authHref }: HeroHeaderProps) => {
     const [menuState, setMenuState] = React.useState(false)
     const [isScrolled, setIsScrolled] = React.useState(false)
 
@@ -84,7 +88,7 @@ export const HeroHeader = () => {
                                     variant="outline"
                                     size="sm"
                                     className={cn(isScrolled && 'lg:hidden')}>
-                                    <Link href="#">
+                                    <Link href={authHref}>
                                         <span>Login</span>
                                     </Link>
                                 </Button>
@@ -92,7 +96,7 @@ export const HeroHeader = () => {
                                     asChild
                                     size="sm"
                                     className={cn(isScrolled && 'lg:hidden')}>
-                                    <Link href="#">
+                                    <Link href="/register">
                                         <span>Sign Up</span>
                                     </Link>
                                 </Button>
@@ -100,7 +104,7 @@ export const HeroHeader = () => {
                                     asChild
                                     size="sm"
                                     className={cn(isScrolled ? 'lg:inline-flex' : 'hidden')}>
-                                    <Link href="#">
+                                    <Link href={authHref}>
                                         <span>Get Started</span>
                                     </Link>
                                 </Button>

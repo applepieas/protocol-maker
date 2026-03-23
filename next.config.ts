@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  turbopack: {
+    root: '/Users/pavelrosenberg/Desktop/1st-projects/protocol-maker',
+  },
   images: {
     remotePatterns: [
       {

@@ -77,6 +77,21 @@ body,
 .simple-editor-content .tiptap.ProseMirror.simple-editor {
   flex: 1;
   padding: 3rem 3rem 30vh;
+  color: var(--foreground);
+  background-color: var(--background);
+  caret-color: var(--foreground);
+  opacity: 1;
+  -webkit-text-fill-color: currentColor;
+
+  p,
+  li,
+  h1,
+  h2,
+  h3,
+  h4,
+  span {
+    opacity: 1;
+  }
 }
 
 @media screen and (max-width: 480px) {

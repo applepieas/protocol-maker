@@ -18,7 +18,6 @@ interface ProtocolFormState {
   zadani: string;
   postup: string;
   pomucky: string;
-  files: File[];
 }
 
 const initialFormState: ProtocolFormState = {
@@ -26,29 +25,13 @@ const initialFormState: ProtocolFormState = {
   zadani: "",
   postup: "",
   pomucky: "",
-  files: [],
 };
 
 export default function NewProtocolPage() {
   const router = useRouter();
   const [formState, setFormState] = useState<ProtocolFormState>(initialFormState);
-  const [isDragActive, setIsDragActive] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  const fileNames = formState.files.map((file) => file.name);
-
-  const onFileSelection = (files: FileList | null) => {
-    if (!files) {
-      return;
-    }
-
-    const selectedFiles = Array.from(files);
-    setFormState((previous) => ({
-      ...previous,
-      files: selectedFiles,
-    }));
-  };
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -95,42 +78,8 @@ export default function NewProtocolPage() {
 
       const protocolId = await createProtocol();
 
-      const filePaths: string[] = [];
-
-      for (const file of formState.files) {
-        const path = `${user.id}/${protocolId}/${file.name}`;
-
-        const { error: uploadError } = await supabase.storage
-          .from("protocol-uploads")
-          .upload(path, file);
-
-        if (uploadError) {
-          throw new Error(uploadError.message);
-        }
-
-        filePaths.push(path);
-
-        const { error: fileRowError } = await supabase.from("protocol_files").insert({
-          protocol_id: protocolId,
-          storage_path: path,
-          file_type: file.type || null,
-        });
-
-        if (fileRowError) {
-          throw new Error(fileRowError.message);
-        }
-      }
-
-      const params = new URLSearchParams({
-        title: formState.title,
-        zadani: formState.zadani,
-        postup: formState.postup,
-        pomucky: formState.pomucky,
-        filePaths: JSON.stringify(filePaths),
-      });
-
       setFormState(initialFormState);
-      router.push(`/editor/${protocolId}?${params.toString()}`);
+      router.push(`/editor/${protocolId}`);
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : "Generování protokolu selhalo neznámou chybou."
@@ -170,44 +119,18 @@ export default function NewProtocolPage() {
 
             <Field>
               <FieldLabel htmlFor="data-soubory">Data / měření / fotografie</FieldLabel>
-              <label
-                htmlFor="data-soubory"
+              <div
                 className={cn(
-                  "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed p-8 text-center",
-                  isDragActive ? "border-primary bg-primary/5" : "border-input bg-background"
+                  "flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-input bg-background p-8 text-center"
                 )}
-                onDragOver={(event) => {
-                  event.preventDefault();
-                  setIsDragActive(true);
-                }}
-                onDragLeave={() => setIsDragActive(false)}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  setIsDragActive(false);
-                  onFileSelection(event.dataTransfer.files);
-                }}
               >
                 <UploadIcon className="size-6 text-muted-foreground" aria-hidden="true" />
                 <p>Přetáhněte soubory sem nebo klikněte pro výběr</p>
                 <p className="text-sm text-muted-foreground">
                   Podporované formáty: CSV, XLSX, JPG, PNG, PDF
                 </p>
-                <input
-                  id="data-soubory"
-                  type="file"
-                  multiple
-                  accept=".csv,.xlsx,.jpg,.jpeg,.png,.pdf,image/*"
-                  className="sr-only"
-                  onChange={(event) => onFileSelection(event.target.files)}
-                />
-              </label>
-              {fileNames.length > 0 ? (
-                <ul className="mt-2 list-inside list-disc text-sm text-muted-foreground">
-                  {fileNames.map((name) => (
-                    <li key={name}>{name}</li>
-                  ))}
-                </ul>
-              ) : null}
+                <p className="text-xs text-muted-foreground">Nahrávání bude brzy dostupné</p>
+              </div>
             </Field>
           </FieldGroup>
 

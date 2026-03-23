@@ -1,11 +1,17 @@
-import { HeroHeader } from "@/components/header";
 import HeroSection from "@/components/hero-section";
+import { createClient } from "@/lib/supabase/server";
 
-export default function Home() {
+export default async function Home() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const authHref = user ? "/dashboard" : "/login";
+
   return (
     <main>
-      <HeroHeader />
-      <HeroSection />
+      <HeroSection authHref={authHref} />
 
     </main>
   );

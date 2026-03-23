@@ -2,6 +2,7 @@ import Link from "next/link";
 import { PlusIcon } from "lucide-react";
 
 import { PageWrapper } from "@/components/page-wrapper";
+import { getProtocols } from "@/lib/supabase/queries";
 import {
   Card,
   CardContent,
@@ -10,30 +11,19 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-const projects = [
-  {
-    id: "electrolyte-curve",
-    title: "VA charakteristika elektrolytu",
-    lastEdited: "Naposledy upraveno: před 2 hodinami",
-  },
-  {
-    id: "conductivity-lab",
-    title: "Měření vodivosti roztoku",
-    lastEdited: "Naposledy upraveno: včera",
-  },
-  {
-    id: "thermal-resistance",
-    title: "Tepelný odpor vzorku",
-    lastEdited: "Naposledy upraveno: před 3 dny",
-  },
-  {
-    id: "battery-cycle",
-    title: "Cyklické zatížení článku",
-    lastEdited: "Naposledy upraveno: před týdnem",
-  },
-];
+function formatLastEdited(value: string) {
+  const date = new Date(value)
 
-export default function Dashboard() {
+  if (Number.isNaN(date.getTime())) {
+    return "Naposledy upraveno: neznámé datum"
+  }
+
+  return `Naposledy upraveno: ${date.toLocaleString("cs-CZ")}`
+}
+
+export default async function Dashboard() {
+  const protocols = await getProtocols()
+
   return (
     <PageWrapper
       breadcrumbs={[
@@ -59,8 +49,8 @@ export default function Dashboard() {
           </Card>
         </Link>
 
-        {projects.map((project) => (
-          <Link key={project.id} href="/dashboard/project" className="block h-full">
+        {protocols.map((protocol) => (
+          <Link key={protocol.id} href={`/editor/${protocol.id}`} className="block h-full">
             <Card className="h-full hover:bg-muted/30">
               <CardContent>
                 <div className="relative h-36 overflow-hidden rounded-md border bg-muted">
@@ -69,8 +59,8 @@ export default function Dashboard() {
                 </div>
               </CardContent>
               <CardHeader>
-                <CardTitle>{project.title}</CardTitle>
-                <CardDescription>{project.lastEdited}</CardDescription>
+                <CardTitle>{protocol.title}</CardTitle>
+                <CardDescription>{formatLastEdited(protocol.updated_at)}</CardDescription>
               </CardHeader>
             </Card>
           </Link>
