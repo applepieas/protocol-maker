@@ -1,15 +1,15 @@
 "use client";
 
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { TriangleAlertIcon, UploadIcon } from "lucide-react";
+import { TriangleAlertIcon, UploadIcon, XIcon } from "lucide-react";
 
-import { PageWrapper } from "@/components/page-wrapper";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Field, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "@/components/ui/field";
+import { Button } from "@/components/ui/button";
+import { Field, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { PageWrapper } from "@/components/page-wrapper";
+import { Textarea } from "@/components/ui/textarea";
 import { createClient } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
@@ -27,19 +27,85 @@ const initialFormState: ProtocolFormState = {
   pomucky: "",
 };
 
+const ACCEPTED_EXTENSIONS = [".xlsx", ".xls", ".csv", ".jpg", ".jpeg", ".png", ".docx"];
+const ACCEPTED_INPUT = ACCEPTED_EXTENSIONS.join(",");
+
+type SubmitPhase = "idle" | "uploading" | "redirecting";
+
+function isAcceptedFile(file: File) {
+  const fileName = file.name.toLowerCase();
+  return ACCEPTED_EXTENSIONS.some((extension) => fileName.endsWith(extension));
+}
+
 export default function NewProtocolPage() {
   const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [formState, setFormState] = useState<ProtocolFormState>(initialFormState);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [isDragActive, setIsDragActive] = useState(false);
+  const [submitPhase, setSubmitPhase] = useState<SubmitPhase>("idle");
+  const [uploadIndex, setUploadIndex] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+  const isSubmitting = submitPhase !== "idle";
+
+  const submitLabel = useMemo(() => {
+    if (submitPhase === "redirecting") {
+      return "Přesměrovávám...";
+    }
+
+    if (submitPhase === "uploading" && uploadIndex !== null) {
+      return `Nahrávám soubor ${uploadIndex} z ${selectedFiles.length}...`;
+    }
+
+    return "Generovat protokol";
+  }, [selectedFiles.length, submitPhase, uploadIndex]);
+
+  const addFiles = (files: FileList | File[]) => {
+    const incomingFiles = Array.from(files);
+    const invalidFile = incomingFiles.find((file) => !isAcceptedFile(file));
+
+    if (invalidFile) {
+      setErrorMessage(
+        `Soubor ${invalidFile.name} není podporovaný. Použijte ${ACCEPTED_EXTENSIONS.join(", ")}.`
+      );
+      return;
+    }
+
+    setErrorMessage(null);
+    setSelectedFiles((previous) => {
+      const nextFiles = [...previous];
+      for (const file of incomingFiles) {
+        const alreadyExists = nextFiles.some(
+          (existing) =>
+            existing.name === file.name &&
+            existing.size === file.size &&
+            existing.lastModified === file.lastModified
+        );
+
+        if (!alreadyExists) {
+          nextFiles.push(file);
+        }
+      }
+      return nextFiles;
+    });
+  };
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     setErrorMessage(null);
-    setIsSubmitting(true);
+
+    if (!formState.title || !formState.zadani || !formState.postup || !formState.pomucky) {
+      setErrorMessage("Vyplňte prosím všechna povinná textová pole.");
+      return;
+    }
 
     const supabase = createClient();
+
+    setSubmitPhase("uploading");
+    setUploadIndex(selectedFiles.length > 0 ? 1 : null);
 
     try {
       const {
@@ -48,44 +114,72 @@ export default function NewProtocolPage() {
       } = await supabase.auth.getUser();
 
       if (authError || !user) {
-        throw new Error("Unauthorized");
+        throw new Error("Not authenticated");
       }
 
-      if (!formState.title || !formState.zadani || !formState.postup || !formState.pomucky) {
-        throw new Error("Vyplňte prosím všechna povinná textová pole.");
+      const { data: createdProtocol, error: createError } = await supabase
+        .from("protocols")
+        .insert({
+          user_id: user.id,
+          title: formState.title,
+          zadani: formState.zadani,
+          postup: formState.postup,
+          pomucky: formState.pomucky,
+          status: "draft",
+        })
+        .select("id")
+        .single();
+
+      if (createError || !createdProtocol?.id) {
+        throw new Error(createError?.message || "Nepodařilo se vytvořit protokol.");
       }
 
-      const createProtocol = async () => {
-        const { data: createdProtocol, error: createProtocolError } = await supabase
-          .from("protocols")
-          .insert({
-            user_id: user.id,
-            title: formState.title,
-            zadani: formState.zadani,
-            postup: formState.postup,
-            pomucky: formState.pomucky,
-            status: "draft",
-          })
-          .select("id")
-          .single();
+      const protocolId = createdProtocol.id;
+      const uploadedPaths: string[] = [];
 
-        if (createProtocolError || !createdProtocol?.id) {
-          throw new Error(createProtocolError?.message || "Nepodařilo se vytvořit protokol.");
+      for (const [index, file] of selectedFiles.entries()) {
+        setUploadIndex(index + 1);
+
+        const path = `${user.id}/${protocolId}/${file.name}`;
+        const { error: uploadError } = await supabase.storage
+          .from("protocol-uploads")
+          .upload(path, file);
+
+        if (uploadError) {
+          throw uploadError;
         }
 
-        return createdProtocol.id;
-      };
+        uploadedPaths.push(path);
 
-      const protocolId = await createProtocol();
+        const { error: fileInsertError } = await supabase.from("protocol_files").insert({
+          protocol_id: protocolId,
+          storage_path: path,
+          file_type: file.type || file.name.split(".").pop() || null,
+        });
+
+        if (fileInsertError) {
+          throw fileInsertError;
+        }
+      }
+
+      setSubmitPhase("redirecting");
+      setUploadIndex(null);
+
+      const params = new URLSearchParams({
+        title: formState.title,
+        zadani: formState.zadani,
+        postup: formState.postup,
+        pomucky: formState.pomucky,
+        filePaths: JSON.stringify(uploadedPaths),
+      });
 
       setFormState(initialFormState);
-      router.push(`/editor/${protocolId}`);
+      setSelectedFiles([]);
+      router.push(`/editor/${protocolId}?${params.toString()}`);
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : "Generování protokolu selhalo neznámou chybou."
-      );
-    } finally {
-      setIsSubmitting(false);
+      setErrorMessage(error instanceof Error ? error.message : "Nastala chyba");
+      setSubmitPhase("idle");
+      setUploadIndex(null);
     }
   };
 
@@ -100,7 +194,7 @@ export default function NewProtocolPage() {
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 py-2">
         <h1 className="text-2xl font-semibold">Nový protokol</h1>
 
-        <form className="flex flex-col gap-6" onSubmit={onSubmit}>
+        <form className="flex flex-col gap-6" onSubmit={handleSubmit}>
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor="nazev-pokusu">Název pokusu</FieldLabel>
@@ -114,23 +208,121 @@ export default function NewProtocolPage() {
                   }))
                 }
                 placeholder="např. VA charakteristika elektrolytu"
+                disabled={isSubmitting}
               />
             </Field>
 
             <Field>
               <FieldLabel htmlFor="data-soubory">Data / měření / fotografie</FieldLabel>
               <div
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  if (!isSubmitting) {
+                    fileInputRef.current?.click();
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if ((event.key === "Enter" || event.key === " ") && !isSubmitting) {
+                    event.preventDefault();
+                    fileInputRef.current?.click();
+                  }
+                }}
+                onDragEnter={(event) => {
+                  event.preventDefault();
+                  if (!isSubmitting) {
+                    setIsDragActive(true);
+                  }
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  if (!isSubmitting) {
+                    setIsDragActive(true);
+                  }
+                }}
+                onDragLeave={(event) => {
+                  event.preventDefault();
+                  const currentTarget = event.currentTarget;
+                  const relatedTarget = event.relatedTarget;
+                  if (!relatedTarget || !currentTarget.contains(relatedTarget as Node)) {
+                    setIsDragActive(false);
+                  }
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  setIsDragActive(false);
+                  if (!isSubmitting) {
+                    addFiles(event.dataTransfer.files);
+                  }
+                }}
                 className={cn(
-                  "flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-input bg-background p-8 text-center"
+                  "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-background p-8 text-center transition-colors",
+                  isDragActive
+                    ? "border-primary bg-primary/5"
+                    : "border-input hover:border-primary/50 hover:bg-accent/40",
+                  isSubmitting && "cursor-not-allowed opacity-70"
                 )}
+                aria-disabled={isSubmitting}
               >
                 <UploadIcon className="size-6 text-muted-foreground" aria-hidden="true" />
                 <p>Přetáhněte soubory sem nebo klikněte pro výběr</p>
                 <p className="text-sm text-muted-foreground">
-                  Podporované formáty: CSV, XLSX, JPG, PNG, PDF
+                  Podporované formáty: XLSX, XLS, CSV, JPG, JPEG, PNG, DOCX
                 </p>
-                <p className="text-xs text-muted-foreground">Nahrávání bude brzy dostupné</p>
               </div>
+              <input
+                ref={fileInputRef}
+                id="data-soubory"
+                type="file"
+                multiple
+                accept={ACCEPTED_INPUT}
+                className="hidden"
+                onChange={(event) => {
+                  if (event.target.files) {
+                    addFiles(event.target.files);
+                  }
+                  event.target.value = "";
+                }}
+                disabled={isSubmitting}
+              />
+              <FieldDescription>
+                Vybrané soubory se nahrají do úložiště před spuštěním generování.
+              </FieldDescription>
+
+              {selectedFiles.length > 0 ? (
+                <div className="mt-3 flex flex-col gap-2">
+                  {selectedFiles.map((file) => (
+                    <div
+                      key={`${file.name}-${file.lastModified}-${file.size}`}
+                      className="flex items-center justify-between gap-3 rounded-lg border bg-card px-3 py-2 text-sm"
+                    >
+                      <span className="truncate">{file.name}</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 shrink-0"
+                        onClick={() =>
+                          setSelectedFiles((previous) =>
+                            previous.filter(
+                              (candidate) =>
+                                !(
+                                  candidate.name === file.name &&
+                                  candidate.size === file.size &&
+                                  candidate.lastModified === file.lastModified
+                                )
+                            )
+                          )
+                        }
+                        disabled={isSubmitting}
+                      >
+                        <XIcon aria-hidden="true" />
+                        <span className="sr-only">Odebrat soubor {file.name}</span>
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </Field>
           </FieldGroup>
 
@@ -150,6 +342,7 @@ export default function NewProtocolPage() {
                       zadani: event.target.value,
                     }))
                   }
+                  disabled={isSubmitting}
                 />
               </Field>
 
@@ -166,6 +359,7 @@ export default function NewProtocolPage() {
                       postup: event.target.value,
                     }))
                   }
+                  disabled={isSubmitting}
                 />
               </Field>
 
@@ -182,6 +376,7 @@ export default function NewProtocolPage() {
                       pomucky: event.target.value,
                     }))
                   }
+                  disabled={isSubmitting}
                 />
               </Field>
             </FieldGroup>
@@ -204,7 +399,7 @@ export default function NewProtocolPage() {
           ) : null}
 
           <Button type="submit" className="w-full py-5" disabled={isSubmitting}>
-            {isSubmitting ? "Připravuji..." : "Generovat protokol"}
+            {submitLabel}
           </Button>
         </form>
       </div>

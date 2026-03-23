@@ -126,7 +126,6 @@ export async function saveProtocolOutput(
     .update({
       tiptap_doc: tiptapDoc,
       sheet_data: sheetData,
-      status: 'done',
     })
     .eq('id', id)
     .eq('user_id', userId)

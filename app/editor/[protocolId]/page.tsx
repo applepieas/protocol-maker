@@ -1,18 +1,43 @@
 'use client'
 
 import Link from 'next/link'
-import { useParams, useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { PageWrapper } from '@/components/page-wrapper'
 import TextEditor from '@/components/text-editor'
+import { PageWrapper } from '@/components/page-wrapper'
 import { Button } from '@/components/ui/button'
 import { createClient } from '@/lib/supabase/client'
-import { Loader2Icon } from 'lucide-react'
 
 type PageState = 'generating' | 'done' | 'error'
 
-type EditorSheetData = Array<{ name: string;[key: string]: unknown }>
+type EditorSheetData = Array<{ name: string; [key: string]: unknown }>
+
+type SSEEvent =
+  | { type: 'log'; message: string }
+  | { type: 'done'; tiptapDoc: object; sheetData: EditorSheetData }
+  | { type: 'error'; message: string; detail?: string }
+
+type ProtocolRow = {
+  id: string
+  user_id: string
+  title: string
+  zadani: string | null
+  postup: string | null
+  pomucky: string | null
+  tiptap_doc: object | null
+  sheet_data: EditorSheetData | null
+  status: 'draft' | 'generating' | 'done' | 'error'
+}
+
+type GenerationPayload = {
+  protocolId: string
+  title: string
+  zadani: string
+  postup: string
+  pomucky: string
+  filePaths: string[]
+}
 
 const FALLBACK_TIPTAP_DOC = {
   type: 'doc',
@@ -25,16 +50,18 @@ function isValidTiptapDoc(value: unknown): value is object {
   return maybeDoc.type === 'doc' && Array.isArray(maybeDoc.content)
 }
 
-type ProtocolRow = {
-  id: string
-  user_id: string
-  title: string
-  zadani: string | null
-  postup: string | null
-  pomucky: string | null
-  tiptap_doc: object | null
-  sheet_data: EditorSheetData | null
-  status: 'draft' | 'generating' | 'done' | 'error'
+function parseFilePaths(value: string | null): string[] | null {
+  if (!value) return []
+
+  try {
+    const parsed = JSON.parse(value)
+    if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
+      return null
+    }
+    return parsed
+  } catch {
+    return null
+  }
 }
 
 async function getProtocol(protocolId: string, userId: string) {
@@ -58,25 +85,175 @@ async function getProtocol(protocolId: string, userId: string) {
   return data
 }
 
+function TerminalPanel({
+  lines,
+  errorDetail,
+  showCursor,
+}: {
+  lines: string[]
+  errorDetail?: string | null
+  showCursor?: boolean
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    element.scrollTop = element.scrollHeight
+  }, [errorDetail, lines])
+
+  const renderedLines = errorDetail ? errorDetail.split('\n') : lines
+
+  return (
+    <div
+      ref={scrollRef}
+      className="max-h-[28rem] min-h-[20rem] overflow-auto rounded-xl border border-zinc-800 bg-zinc-950 p-4 font-mono text-xs text-zinc-300"
+    >
+      <div className="flex flex-col gap-2">
+        {renderedLines.length > 0 ? (
+          renderedLines.map((line, index) => {
+            const isLast = index === renderedLines.length - 1
+            return (
+              <div key={`${index}-${line}`} className="break-words whitespace-pre-wrap">
+                <span className="mr-2 text-zinc-500">{'>'}</span>
+                <span>{line || ' '}</span>
+                {showCursor && isLast ? <span className="ml-1 inline-block animate-pulse">_</span> : null}
+              </div>
+            )
+          })
+        ) : (
+          <div className="break-words whitespace-pre-wrap">
+            <span className="mr-2 text-zinc-500">{'>'}</span>
+            <span>Čekám na logy...</span>
+            {showCursor ? <span className="ml-1 inline-block animate-pulse">_</span> : null}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function EditorProtocolPage() {
   const params = useParams<{ protocolId: string }>()
   const protocolId = params.protocolId
   const router = useRouter()
+  const searchParams = useSearchParams()
 
   const [state, setState] = useState<PageState>('generating')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [errorDetail, setErrorDetail] = useState<string | null>(null)
   const [warningMessage, setWarningMessage] = useState<string | null>(null)
   const [tiptapDoc, setTiptapDoc] = useState<object | undefined>(undefined)
   const [sheetData, setSheetData] = useState<EditorSheetData | undefined>(undefined)
+  const [logs, setLogs] = useState<string[]>([])
   const [reloadKey, setReloadKey] = useState(0)
+
+  const generationPayload = useMemo<GenerationPayload | null>(() => {
+    const title = searchParams.get('title')
+    const zadani = searchParams.get('zadani')
+    const postup = searchParams.get('postup')
+    const pomucky = searchParams.get('pomucky')
+    const filePaths = parseFilePaths(searchParams.get('filePaths'))
+
+    if (!title || !zadani || !postup || !pomucky || filePaths === null) {
+      return null
+    }
+
+    return {
+      protocolId,
+      title,
+      zadani,
+      postup,
+      pomucky,
+      filePaths,
+    }
+  }, [protocolId, searchParams])
 
   useEffect(() => {
     let isCancelled = false
+
+    const startGeneration = async (payload: GenerationPayload) => {
+      setLogs([])
+      setErrorMessage(null)
+      setErrorDetail(null)
+      setState('generating')
+
+      const response = await fetch('/api/generate-protocol', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      })
+
+      if (!response.body) {
+        throw new Error('SSE response body is missing.')
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split('\n\n')
+        buffer = chunks.pop() ?? ''
+
+        for (const chunk of chunks) {
+          const dataLines = chunk
+            .split('\n')
+            .filter((line) => line.startsWith('data: '))
+
+          for (const line of dataLines) {
+            const event = JSON.parse(line.slice(6)) as SSEEvent
+
+            if (isCancelled) {
+              return
+            }
+
+            if (event.type === 'log') {
+              setLogs((previous) => [...previous, event.message])
+            }
+
+            if (event.type === 'done') {
+              setTiptapDoc(event.tiptapDoc)
+              setSheetData(event.sheetData)
+              setState('done')
+            }
+
+            if (event.type === 'error') {
+              setErrorMessage(event.message)
+              setErrorDetail(event.detail ?? event.message)
+              setState('error')
+            }
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        const line = buffer
+          .split('\n')
+          .find((entry) => entry.startsWith('data: '))
+
+        if (line) {
+          const event = JSON.parse(line.slice(6)) as SSEEvent
+          if (event.type === 'error') {
+            setErrorMessage(event.message)
+            setErrorDetail(event.detail ?? event.message)
+            setState('error')
+          }
+        }
+      }
+    }
 
     const bootstrap = async () => {
       try {
         setState('generating')
         setErrorMessage(null)
+        setErrorDetail(null)
         setWarningMessage(null)
 
         const supabase = createClient()
@@ -96,34 +273,49 @@ export default function EditorProtocolPage() {
 
         if (isCancelled) return
 
-        // If previously errored, show error state immediately — do NOT auto-retry
-        if (data.status === 'error') {
-          setErrorMessage('Při předchozím generování došlo k chybě. Vytvořte nový protokol.')
-          setState('error')
-          return
-        }
-
         const hydratedDoc = data.tiptap_doc ?? undefined
         const hydratedSheetData = data.sheet_data ?? undefined
 
         if (isValidTiptapDoc(hydratedDoc)) {
           setTiptapDoc(hydratedDoc)
-        } else if (hydratedDoc) {
+          setSheetData(hydratedSheetData)
+          setState('done')
+          return
+        }
+
+        if (hydratedDoc) {
           setWarningMessage(
             'Historická verze textu není validní. Tabulky jsou načteny a text můžete upravit ručně.'
           )
           setTiptapDoc(FALLBACK_TIPTAP_DOC)
-        } else {
-          setTiptapDoc(undefined)
+          setSheetData(hydratedSheetData)
+          setState('done')
+          return
         }
 
-        setSheetData(hydratedSheetData)
-        setState('done')
+        if (data.status === 'error' && reloadKey === 0) {
+          setErrorMessage('Předchozí generování selhalo.')
+          setErrorDetail('Klikněte na "Zkusit znovu" pro nové spuštění generování s aktuálními vstupy.')
+          setState('error')
+          return
+        }
+
+        if (!generationPayload) {
+          setErrorMessage('Chybí vstupní data pro generování protokolu.')
+          setErrorDetail(
+            data.status === 'error'
+              ? 'Předchozí generování selhalo a v URL chybí vstupní data pro nový pokus.'
+              : 'V URL nejsou dostupné povinné parametry title, zadani, postup, pomucky nebo filePaths.'
+          )
+          setState('error')
+          return
+        }
+
+        await startGeneration(generationPayload)
       } catch (error) {
         if (isCancelled) return
-        setErrorMessage(
-          error instanceof Error ? error.message : 'Při načítání protokolu došlo k chybě.'
-        )
+        setErrorMessage(error instanceof Error ? error.message : 'Při načítání protokolu došlo k chybě.')
+        setErrorDetail(error instanceof Error ? error.stack ?? error.message : 'Unknown editor error.')
         setState('error')
       }
     }
@@ -133,7 +325,7 @@ export default function EditorProtocolPage() {
     return () => {
       isCancelled = true
     }
-  }, [protocolId, reloadKey, router])
+  }, [generationPayload, protocolId, reloadKey, router])
 
   return (
     <PageWrapper
@@ -156,31 +348,23 @@ export default function EditorProtocolPage() {
       ) : null}
 
       {state === 'generating' ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-          <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-xl border bg-card p-8 text-card-foreground">
-            <Loader2Icon className="size-7 animate-spin text-muted-foreground" aria-hidden="true" />
-            <p className="text-sm text-muted-foreground">Načítám protokol...</p>
-          </div>
+        <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-4 p-6">
+          <h2 className="text-lg font-semibold">Generuji protokol...</h2>
+          <TerminalPanel lines={logs} showCursor />
         </div>
       ) : null}
 
       {state === 'error' ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-          <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-xl border bg-card p-8 text-center">
-            <h2 className="text-lg font-semibold">Generování selhalo</h2>
-            {errorMessage ? (
-              <p className="rounded-md bg-muted px-4 py-3 text-left font-mono text-sm text-muted-foreground break-all">
-                {errorMessage}
-              </p>
-            ) : null}
-            <div className="flex w-full flex-col gap-2 sm:flex-row">
-              <Button variant="outline" className="w-full" onClick={() => setReloadKey((value) => value + 1)}>
-                Zkusit znovu
-              </Button>
-              <Button variant="outline" className="w-full" asChild>
-                <Link href="/dashboard">Zpět na dashboard</Link>
-              </Button>
-            </div>
+        <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-4 p-6">
+          <h2 className="text-lg font-semibold text-red-600">Generování selhalo</h2>
+          <TerminalPanel lines={[]} errorDetail={errorDetail ?? errorMessage} />
+          <div className="flex w-full flex-col gap-2 sm:flex-row">
+            <Button variant="outline" className="w-full" onClick={() => setReloadKey((value) => value + 1)}>
+              Zkusit znovu
+            </Button>
+            <Button variant="outline" className="w-full" asChild>
+              <Link href="/dashboard">Zpět na dashboard</Link>
+            </Button>
           </div>
         </div>
       ) : null}
