@@ -21,10 +21,17 @@ interface ProtocolFormState {
 }
 
 const initialFormState: ProtocolFormState = {
-  title: "",
-  zadani: "",
-  postup: "",
-  pomucky: "",
+  title: "VA charakteristika elektrolytu",
+  zadani: [
+    "1. promerte VA char elektrolitu a urcete jeho R",
+    "2. zmerte zavislost R na vzdalenosti elektrod",
+    "3. zmerte zavislost R na hloubce ponoru elektrod",
+  ].join("\n"),
+  postup: [
+    "meli jsme sklenenou vanu s roztokem CuSO4 a jsme meli zapojeny obvod s tedy tou vanou dvema elektrodama z toho C katoda a Cu Anoda a s tranzistorem kde jsme menili teda to napeti.",
+    "pri druhem sme meli samy obvod ale U jsme nechali konstantni a jen sme je postupne vytahovali viz \"h\" v druhe tabulce a u tretiho mereni jsme je vzdalovali ale kvuli casu jsme stihli udelat jen 3 mereni tak jsme t zmerili 1cm od sebe 5cm od sebe a 10cm od sebe hloubka nevim jaka ale konstantni.",
+  ].join("\n\n"),
+  pomucky: "sklenena vana, C a Cu elektrody, metr, voltmetr, ampermetr, reostat, elektrolyt",
 };
 
 const ACCEPTED_EXTENSIONS = [".xlsx", ".xls", ".csv", ".jpg", ".jpeg", ".png", ".docx"];
