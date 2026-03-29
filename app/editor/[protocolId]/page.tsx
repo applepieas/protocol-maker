@@ -8,6 +8,8 @@ import TextEditor from '@/components/text-editor'
 import { PageWrapper } from '@/components/page-wrapper'
 import { Button } from '@/components/ui/button'
 import { createClient } from '@/lib/supabase/client'
+import type { ChartSuggestion } from '@/lib/types/charts'
+import type { FortuneSheetData } from '@/lib/utils/sheet'
 
 type PageState = 'generating' | 'done' | 'error'
 
@@ -15,7 +17,7 @@ type EditorSheetData = Array<{ name: string; [key: string]: unknown }>
 
 type SSEEvent =
   | { type: 'log'; message: string }
-  | { type: 'done'; tiptapDoc: object; sheetData: EditorSheetData }
+  | { type: 'done'; tiptapDoc: object; sheetData: EditorSheetData; chartSuggestions: ChartSuggestion[] }
   | { type: 'error'; message: string; detail?: string }
 
 type ProtocolRow = {
@@ -48,6 +50,10 @@ function isValidTiptapDoc(value: unknown): value is object {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const maybeDoc = value as { type?: unknown; content?: unknown }
   return maybeDoc.type === 'doc' && Array.isArray(maybeDoc.content)
+}
+
+function docHasCharts(doc: object): boolean {
+  return JSON.stringify(doc).includes('"type":"chartNode"')
 }
 
 function parseFilePaths(value: string | null): string[] | null {
@@ -145,6 +151,7 @@ export default function EditorProtocolPage() {
   const [warningMessage, setWarningMessage] = useState<string | null>(null)
   const [tiptapDoc, setTiptapDoc] = useState<object | undefined>(undefined)
   const [sheetData, setSheetData] = useState<EditorSheetData | undefined>(undefined)
+  const [chartSuggestions, setChartSuggestions] = useState<ChartSuggestion[]>([])
   const [logs, setLogs] = useState<string[]>([])
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -221,6 +228,9 @@ export default function EditorProtocolPage() {
             if (event.type === 'done') {
               setTiptapDoc(event.tiptapDoc)
               setSheetData(event.sheetData)
+              if (!docHasCharts(event.tiptapDoc)) {
+                setChartSuggestions(event.chartSuggestions ?? [])
+              }
               setState('done')
             }
 
@@ -342,7 +352,18 @@ export default function EditorProtocolPage() {
             </div>
           ) : null}
           <div className="flex min-h-0 min-w-0 flex-1">
-            <TextEditor initialContent={tiptapDoc} initialSheetData={sheetData} />
+            <TextEditor
+                initialContent={tiptapDoc}
+                initialSheetData={sheetData}
+                autoInsertCharts={
+                  chartSuggestions.length > 0 && sheetData
+                    ? chartSuggestions.map((suggestion) => ({
+                        suggestion,
+                        sheets: sheetData as FortuneSheetData[],
+                      }))
+                    : undefined
+                }
+              />
           </div>
         </div>
       ) : null}

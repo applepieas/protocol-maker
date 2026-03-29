@@ -8,6 +8,7 @@ import {
   type ExtractedTable,
   type FortuneSheetData,
 } from '@/lib/utils/sheet'
+import type { ChartSuggestion } from '@/lib/types/charts'
 
 type GenerateProtocolRequest = {
   protocolId: string
@@ -20,7 +21,7 @@ type GenerateProtocolRequest = {
 
 type SSEEvent =
   | { type: 'log'; message: string }
-  | { type: 'done'; tiptapDoc: object; sheetData: object[] }
+  | { type: 'done'; tiptapDoc: object; sheetData: object[]; chartSuggestions: ChartSuggestion[] }
   | { type: 'error'; message: string; detail?: string }
 
 type ProcessedFile =
@@ -113,8 +114,25 @@ OUTPUT FORMAT — respond with ONLY this JSON, nothing else
         { "label": "VG", "values": [null, null, null, 15.589] }
       ]
     }
+  ],
+  "chart_suggestions": [
+    {
+      "table_id": "table_1",
+      "chart_type": "scatter_line",
+      "x_header": "U (V)",
+      "y_headers": ["I (mA)"],
+      "title": "Voltampérová charakteristika rezistoru"
+    }
   ]
 }
+
+chart_suggestions rules — include one entry per meaningful relationship in the data:
+- Voltage column + current column → scatter_line, x=voltage, y=current, title "Voltampérová charakteristika ..."
+- Any derived column (R, n, g, v, Q, ρ) plotted against the independent variable → scatter_line or line
+- Repeated measurements of same quantity → line chart showing the spread
+- Categorical label column → bar chart
+- Max 2 suggestions per table, 4 total
+- If no meaningful XY relationship exists, output an empty array []
 
 No markdown fences, no explanation, no preamble. The response must be parseable by JSON.parse().`
 
@@ -415,7 +433,7 @@ Extract all tables (remember: empty column gaps = separate tables), normalize he
             'HTTP-Referer': process.env.NEXT_PUBLIC_APP_URL ?? '',
           },
           body: JSON.stringify({
-            model: 'anthropic/claude-sonnet-4-5',
+            model: 'moonshotai/kimi-k2.5',
             max_tokens: 16000,
             response_format: { type: 'json_object' },
             messages: [
@@ -440,7 +458,7 @@ Extract all tables (remember: empty column gaps = separate tables), normalize he
 
         const normalizedRaw = normalizeModelJson(raw)
 
-        let parsed: { tiptap: object; tables: ExtractedTable[] }
+        let parsed: { tiptap: object; tables: ExtractedTable[]; chart_suggestions?: ChartSuggestion[] }
         try {
           parsed = JSON.parse(normalizedRaw)
         } catch {
@@ -460,7 +478,11 @@ Extract all tables (remember: empty column gaps = separate tables), normalize he
         })
 
         const tables = parsed.tables
-        if (!Array.isArray(tables) || tables.length === 0) {
+        if (!Array.isArray(tables)) {
+          throw new Error('Invalid tables payload in response')
+        }
+
+        if (tables.length === 0 && filePaths.length > 0) {
           throw new Error('No tables detected in response')
         }
 
@@ -480,9 +502,12 @@ Extract all tables (remember: empty column gaps = separate tables), normalize he
 
         emit(controller, {
           type: 'log',
-          message: `Detected ${tables.length} table(s): ${tables
-            .map((table) => `${table.id} (${table.headers.length} cols, ${table.rows.length} rows)`)
-            .join(', ')}`,
+          message:
+            tables.length > 0
+              ? `Detected ${tables.length} table(s): ${tables
+                  .map((table) => `${table.id} (${table.headers.length} cols, ${table.rows.length} rows)`)
+                  .join(', ')}`
+              : 'No tables detected — continuing with an empty spreadsheet for text-only testing.',
         })
 
         emit(controller, { type: 'log', message: 'Converting tables to fortune-sheet format...' })
@@ -497,6 +522,7 @@ Extract all tables (remember: empty column gaps = separate tables), normalize he
           type: 'done',
           tiptapDoc: parsed.tiptap,
           sheetData,
+          chartSuggestions: parsed.chart_suggestions ?? [],
         })
       } catch (error) {
         await updateProtocolStatus(protocolId, 'error').catch(() => undefined)

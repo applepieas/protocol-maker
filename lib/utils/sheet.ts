@@ -26,6 +26,133 @@ export interface FortuneSheetData extends Record<string, unknown> {
   column: number
 }
 
+// ---------------------------------------------------------------------------
+// Chart utilities
+// ---------------------------------------------------------------------------
+
+import type { ChartDataPoint } from '@/lib/types/charts'
+
+// ---------------------------------------------------------------------------
+// Internal helpers — handle both storage formats returned by FortuneSheet
+//
+// Initialization format (our own, from tableDataToSheetData):
+//   sheet.celldata = [{ r, c, v: { v, m, t, bl } }]
+//
+// Live format (returned by workbookRef.current?.getAllSheets() after mount):
+//   sheet.data = CellValue[][]  — dense 2-D array, each cell is { v, m, ct, bl }
+//   The `t` field we set is gone; numeric cells have ct: { t: 'n', fa: '...' }
+//   or we can simply check typeof v === 'number'.
+// ---------------------------------------------------------------------------
+
+type RawCell = Record<string, unknown> | null | undefined
+
+function rawCellToString(cell: RawCell, colIndex: number): string {
+  if (!cell) return `Sloupec ${colIndex + 1}`
+  const v = cell.v ?? cell.m
+  const s = v != null ? String(v) : ''
+  return s.trim() || `Sloupec ${colIndex + 1}`
+}
+
+function rawCellToNumber(cell: RawCell): number | null {
+  if (!cell) return null
+  const v = cell.v
+  if (typeof v === 'number') return v
+  if (typeof v === 'string' && v !== '') {
+    const n = parseFloat(v.replace(',', '.'))
+    return isNaN(n) ? null : n
+  }
+  return null
+}
+
+/**
+ * Returns the column header strings from row 0 of a sheet, sorted by column index.
+ * Works with both the sparse `celldata` format and the dense `data` 2-D array.
+ */
+export function extractColumnHeaders(sheet: FortuneSheetData): string[] {
+  // Sparse celldata format (our own initialization format)
+  if (Array.isArray(sheet?.celldata) && sheet.celldata.length > 0) {
+    return sheet.celldata
+      .filter(cell => cell.r === 0)
+      .sort((a, b) => a.c - b.c)
+      .map((cell, i) => String(cell.v.v ?? cell.v.m ?? `Sloupec ${i + 1}`))
+  }
+
+  // Dense data 2-D array (FortuneSheet internal format after mount)
+  const data = (sheet as Record<string, unknown>).data
+  if (Array.isArray(data) && Array.isArray(data[0])) {
+    return (data[0] as RawCell[])
+      .map((cell, i) => rawCellToString(cell, i))
+      .filter(h => !h.startsWith('Sloupec ') || h === 'Sloupec 1') // keep explicit empty-string headers out
+  }
+
+  return []
+}
+
+/**
+ * Returns all numeric values in `colIndex` for rows r ≥ 1, in row order.
+ * Works with both the sparse `celldata` format and the dense `data` 2-D array.
+ */
+export function extractColumnData(sheet: FortuneSheetData, colIndex: number): (number | null)[] {
+  // Sparse celldata format
+  if (Array.isArray(sheet?.celldata) && sheet.celldata.length > 0) {
+    const maxRow = sheet.celldata.reduce((max, c) => Math.max(max, c.r), 0)
+    const result: (number | null)[] = []
+    for (let r = 1; r <= maxRow; r++) {
+      const cell = sheet.celldata.find(c => c.r === r && c.c === colIndex)
+      // accept our own t:'n' flag OR simply a numeric v value
+      const v = cell?.v?.v
+      const isNum = cell?.v?.t === 'n' || typeof v === 'number'
+      result.push((isNum && v != null) ? (v as number) : null)
+    }
+    return result
+  }
+
+  // Dense data 2-D array
+  const data = (sheet as Record<string, unknown>).data
+  if (!Array.isArray(data)) return []
+  const result: (number | null)[] = []
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r]
+    const cell: RawCell = Array.isArray(row) ? (row as RawCell[])[colIndex] : null
+    result.push(rawCellToNumber(cell))
+  }
+  return result
+}
+
+/**
+ * Zips the xHeader column and one or more yHeaders columns into a ChartDataPoint array.
+ * Rows where x is null are excluded. Each point has shape { x, [yKey]: value }.
+ */
+export function buildChartData(
+  sheet: FortuneSheetData,
+  xHeader: string,
+  yHeaders: string[]
+): ChartDataPoint[] {
+  const headers = extractColumnHeaders(sheet)
+  const xIndex = headers.indexOf(xHeader)
+  if (xIndex === -1) return []
+
+  const yIndices = yHeaders.map(h => headers.indexOf(h)).filter(i => i !== -1)
+  if (yIndices.length === 0) return []
+
+  const xValues = extractColumnData(sheet, xIndex)
+  const yColumns = yIndices.map(i => extractColumnData(sheet, i))
+
+  const points: ChartDataPoint[] = []
+  for (let i = 0; i < xValues.length; i++) {
+    const x = xValues[i]
+    if (x === null) continue
+    const point: ChartDataPoint = { x }
+    yIndices.forEach((_, j) => {
+      point[yHeaders[j]] = yColumns[j][i]
+    })
+    points.push(point)
+  }
+  return points
+}
+
+// ---------------------------------------------------------------------------
+
 export function tableDataToSheetData(tables: ExtractedTable[]): FortuneSheetData[] {
   return tables.map((table, sheetIndex) => {
     const celldata: SheetCell[] = []

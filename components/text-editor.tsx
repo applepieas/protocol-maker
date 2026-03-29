@@ -5,6 +5,8 @@ import { Workbook, type WorkbookInstance } from "@fortune-sheet/react"
 import "@fortune-sheet/react/dist/index.css"
 
 import { SimpleEditor } from "@/components/tiptap-templates/simple/simple-editor"
+import type { FortuneSheetData } from "@/lib/utils/sheet"
+import type { ChartSuggestion } from "@/lib/types/charts"
 
 const MIN_LEFT_PANE_PERCENT = 20
 const MAX_LEFT_PANE_PERCENT = 80
@@ -14,6 +16,7 @@ const INITIAL_SHEETS = [{ name: "Sheet 1" }]
 type TextEditorProps = {
   initialContent?: object
   initialSheetData?: Array<{ name: string;[key: string]: unknown }>
+  autoInsertCharts?: Array<{ suggestion: ChartSuggestion; sheets: FortuneSheetData[] }>
 }
 
 const clampPaneSize = (value: number) => {
@@ -42,12 +45,18 @@ const czechToDecimalDot = (text: string): string => {
 export default function TextEditor({
   initialContent,
   initialSheetData,
+  autoInsertCharts,
 }: TextEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const dataPaneRef = useRef<HTMLDivElement>(null)
   const workbookRef = useRef<WorkbookInstance | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [leftPanePercent, setLeftPanePercent] = useState(50)
+
+  const getSheetData = useCallback((): FortuneSheetData[] => {
+    const raw = workbookRef.current?.getAllSheets()
+    return Array.isArray(raw) ? (raw as FortuneSheetData[]) : []
+  }, [])
   const workbookData = initialSheetData && initialSheetData.length > 0
     ? initialSheetData
     : INITIAL_SHEETS
@@ -238,7 +247,11 @@ export default function TextEditor({
         className="h-full min-h-0 min-w-0 overflow-hidden"
         style={{ width: `${leftPanePercent}%` }}
       >
-        <SimpleEditor initialContent={initialContent} />
+        <SimpleEditor
+            initialContent={initialContent}
+            getSheetData={getSheetData}
+            autoInsertCharts={autoInsertCharts}
+          />
       </section>
 
       {/* ── Divider ── */}
